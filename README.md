@@ -83,7 +83,14 @@ Use `--device ID` to override the configured device. `pnpm agent --help` lists a
 
 ### Local ADB / UiAutomator transport
 
-The CLI can use a local Android device without Mobilerun or cloud device transport. The Jev policy and deterministic freshness, bounds, actionability, and input-verification checks remain unchanged:
+For a terminal one-command launcher, use `run-local-agent.sh`:
+
+```sh
+./run-local-agent.sh "Open Gmail"
+./run-local-agent.sh "Search for order 42" "order 42" 10
+```
+
+Double-click `run-local-agent.command` from Finder for the interactive macOS launcher. The CLI can use a local Android device without Mobilerun or cloud device transport. The Jev policy and deterministic freshness, bounds, actionability, and input-verification checks remain unchanged:
 
 ```sh
 # List trusted local adb devices
