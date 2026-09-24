@@ -2,6 +2,7 @@ import { parseArgs } from 'node:util';
 import { mkdir, open, readFile, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { MobilerunDevice } from './device.mjs';
+import { UiAutomatorDevice } from './uiautomator.mjs';
 import { TypeSafePolicy, runAgent } from './agent.mjs';
 import { pooledRequest, decodeJson } from './http.mjs';
 import { measuredRequest, summarizeMetrics } from './metrics.mjs';
@@ -26,7 +27,8 @@ Commands:
   run GOAL                       Preview a TypeSafe decision; --execute runs the loop
 
 Options:
-  --device ID                    Or MOBILERUN_DEVICE_ID
+  --device ID                    Mobilerun device ID (or MOBILERUN_DEVICE_ID)
+  --transport NAME               mobilerun (default) or uiautomator (local adb; --device is the adb serial / ADB_SERIAL)
   --out PATH                     Save observe JSON or screenshot PNG
   --snapshot PATH                Original observe JSON for tap-element
   --text VALUE                   Repeatable exact text candidates for TypeSafe
@@ -39,6 +41,7 @@ Options:
   --trace PATH                   Save model requests, responses, actions, and final state (JSONL)
 
 Keys: MOBILERUN_API_KEY (or MOBILERUN_CLOUD_API_KEY); TYPESAFE_API_KEY for run.
+The uiautomator transport needs no device key: a trusted local adb connection.
 Direct commands execute immediately. Run sends goal and UI text to TypeSafe.
 `;
 
@@ -63,6 +66,7 @@ async function main() {
       'settle-ms': { type: 'string', default: '0' },
       'wait-timeout-ms': { type: 'string', default: '15000' },
       'text-completion': { type: 'string' },
+      transport: { type: 'string' },
       text: { type: 'string', multiple: true, default: [] },
     },
   });
@@ -76,10 +80,16 @@ async function main() {
     if (args.length < min || args.length > max)
       throw new Error(`Invalid arguments for ${command}. Use --help.`);
   };
-  const device = new MobilerunDevice({
-    deviceId: values.device || process.env.MOBILERUN_DEVICE_ID,
-    textCompletionMode: values['text-completion'],
-  });
+  const transport = values.transport ?? process.env.AGENT_TRANSPORT ?? 'mobilerun';
+  if (!['mobilerun', 'uiautomator'].includes(transport))
+    throw new Error(`Unknown transport: ${transport}. Use mobilerun or uiautomator.`);
+  const device =
+    transport === 'uiautomator'
+      ? new UiAutomatorDevice({ serial: values.device || process.env.ADB_SERIAL })
+      : new MobilerunDevice({
+          deviceId: values.device || process.env.MOBILERUN_DEVICE_ID,
+          textCompletionMode: values['text-completion'],
+        });
   if (command === 'devices') {
     arity(0);
     print(await device.listDevices());
@@ -87,6 +97,8 @@ async function main() {
   }
   if (command === 'profile') {
     arity(0);
+    if (transport === 'uiautomator')
+      throw new Error('profile only measures the Mobilerun HTTP transport.');
     const metrics = [];
     device.request = measuredRequest({ service: 'mobilerun', metrics });
     await device.assertReady();
@@ -129,7 +141,40 @@ async function main() {
     };
     const metrics = [];
     const onMetric = async (metric) => record({ event: 'request_timing', ...metric });
-    device.request = measuredRequest({ service: 'mobilerun', metrics, onMetric });
+    if (transport === 'uiautomator') {
+      // adb has no HTTP timing; record wall time per command so the trace still profiles the device side.
+      const baseRun = device.run;
+      device.run = async (args) => {
+        const started = performance.now();
+        let error;
+        try {
+          return await baseRun(args);
+        } catch (failure) {
+          error = failure;
+          throw failure;
+        } finally {
+          const a = args.slice(args[0] === '-s' ? 2 : 0);
+          const metric = {
+            service: 'adb',
+            endpoint: `adb ${a[0]}${
+              a[0] === 'shell'
+                ? ' ' +
+                  String(a[1] ?? '')
+                    .split(' ')
+                    .slice(0, 2)
+                    .join(' ')
+                : ''
+            }`,
+            wallMs: Math.round((performance.now() - started) * 10) / 10,
+            ok: !error,
+          };
+          metrics.push(metric);
+          await onMetric(metric);
+        }
+      };
+    } else {
+      device.request = measuredRequest({ service: 'mobilerun', metrics, onMetric });
+    }
     const modelRequest = measuredRequest({
       service: 'typesafe',
       metrics,
@@ -139,8 +184,8 @@ async function main() {
     try {
       await record({
         event: 'run',
-        deviceId: device.deviceId,
-        baseUrl: device.baseUrl,
+        deviceId: device.deviceId ?? device.serial,
+        baseUrl: device.baseUrl ?? 'adb',
         goal: args[0],
         execute: values.execute ?? false,
         confidenceThreshold: Number(values.confidence),
@@ -238,6 +283,7 @@ async function main() {
       throw new Error('Unknown command. Use --help.');
   }
   const receipt = await device.act(action, { expected });
+  // Same observation/verification semantics for both transports.
   let observation = await device.observe();
   if (receipt?.inputVerification) {
     const confirmation = await confirmInput({
@@ -262,7 +308,7 @@ main().catch((error) => {
     process.env.MOBILERUN_API_KEY,
     process.env.MOBILERUN_CLOUD_API_KEY,
     process.env.TYPESAFE_API_KEY,
-  ]) {
+  ].filter(Boolean)) {
     if (key) message = message.split(key).join('[redacted]');
   }
   console.error(message);

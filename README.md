@@ -81,6 +81,24 @@ pnpm agent back
 
 Use `--device ID` to override the configured device. `pnpm agent --help` lists all options. Traces and screenshots are ignored by git and never overwrite an existing file.
 
+### Local ADB / UiAutomator transport
+
+The CLI can use a local Android device without Mobilerun or cloud device transport. The Jev policy and deterministic freshness, bounds, actionability, and input-verification checks remain unchanged:
+
+```sh
+# List trusted local adb devices
+pnpm agent --transport uiautomator devices
+
+# Inspect and screenshot a selected device
+pnpm agent --transport uiautomator --device SERIAL observe
+pnpm agent --transport uiautomator --device SERIAL screenshot --out artifacts/local.png
+
+# Preview or execute a Jev goal locally
+pnpm agent --transport uiautomator --device SERIAL run "Find order 42" --text "Order 42" --execute
+```
+
+Requirements are Android platform-tools (`adb`) and a USB- or network-trusted device. `ADB_SERIAL` can replace `--device`; `AGENT_TRANSPORT=uiautomator` makes the local transport the default. The local adapter obtains screen size, foreground package, keyboard state, screenshots, and the accessibility tree from `adb`/`uiautomator dump`. App labels are package names because the adapter does not require an on-device instrumentation service. `pnpm doctor uia` checks the local setup.
+
 ## How Jev drives it
 
 ```mermaid
